@@ -3,7 +3,7 @@ import scipy.io
 import matplotlib.pyplot as plt
 
 def load_data():
-    data = scipy.io.loadmat('pvLoadPriceData.mat')
+    data = scipy.io.loadmat('pvLoadPriceData_New.mat')
     # load profile 2 is the variable load
     # Added to a 350kW constant load
     # Values in loadData seem to be in Watts

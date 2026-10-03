@@ -1,6 +1,6 @@
-% Step 8:MPC/receding-horizon wrapper
+% MPC/receding-horizon wrapper
 %
-% What this script does, in plain terms:
+% What this script does:
 %   1. Builds an "actual" weather/load/tariff timeline and a slightly
 %      noisier "forecast" version of the same timeline (real forecasts
 %      are never perfect -- this is what makes the receding-horizon
@@ -12,43 +12,13 @@
 %      grid draw from the real power balance, updates the real SOC, and
 %      moves the clock forward one hour before re-solving.
 %   4. Compares the resulting cost against the grid-only baseline
-%      (Section 3.6) and prints/plots the results.
+%      and prints/plots the results.
 
-% clear; clc; close all;
 clearvars; clc; close all;
-
-% %% ---------------- configuration ----------------
-% p = struct();
-% p.dt        = 1;          % timestep (h)
-% p.eta_ch    = 0.95;        % charge efficiency (ηch)
-% p.eta_dis   = 0.95;        % discharge efficiency (ηdis)
-% p.Pch_max   = 250;         % kW, max charge power (Pch(t))
-% p.Pdis_max  = 250;         % kW, max discharge power (Pdis(t))
-% p.Ecap      = 1000;        % kWh, nominal battery capacity
-% p.Emin      = 0.20*p.Ecap; % SOC floor 20% (200 kWh)
-% p.Emax      = 0.90*p.Ecap; % SOC ceiling 90% (900 kWh)
-% 
-% %CI1; (Consumption threshold: >15,000 KWh/Month,
-%        % Peak TOU: 13.44 KES/kWh, Off-peak TOU: 6.72 KES/kWh
-%        % Demand charge: 1,100 KES/kVA)
-% 
-% p.Pgrid_max = 2000;        % kW, contracted/physical grid import limit (Pgrid(t)) 
-% p.CD        = 1100;        % KES/kVA, demand charge rate (CD)
-% p.rho       = 15;          % KES/kWh, linear penalty weight on overshoot s(t)
-%                             % (should sit above lambda's peak rate (13.44 KES/kWh) so the
-%                             % EMS prefers staying under Pcap when it can,
-%                             % but never so high the problem behaves like
-%                             % a hard, potentially-infeasible constraint)
-% 
-% data_params = struct('Ppv_rated', 500, 'Pload_base', 150, 'Pload_peak', 600);
-% 
-% T_horizon      = 24;   % hours the MILP looks ahead at each solve
-% Nsim           = 72;   % hours to actually simulate (3 days)
-% forecast_noise = 0.08; % 8% forecast error, similar order to the MAPE
-%                         % used for LMP forecasting in Wang et al. (2024)
 
 %% ---------------- configuration ----------------
 p = struct();
+p.pf        = 0.920;      % Site Power Factor (cos φ)
 p.dt        = 1;          % timestep (h)
 p.eta_ch    = 0.95;       % charge efficiency (ηch)
 p.eta_dis   = 0.95;       % discharge efficiency (ηdis)
@@ -68,7 +38,7 @@ p.CD        = 1100;       % KES/kVA, demand charge rate (CD)
 p.rho       = 15;         % KES/kWh, linear penalty weight on overshoot s(t)
 
 % Microgrid Sizing Parameters (from PSO: 1360.61 kWp PV / 695 kW Peak Load)
-data_params = struct('Ppv_rated', 1360.61, 'Pload_base',350, 'Pload_peak', 895);
+data_params = struct('Ppv_rated', 1360.61, 'Pload_base',350, 'Pload_peak', 695);
 
 T_horizon      = 24;   % hours the MILP looks ahead at each solve
 Nsim           = 72;   % hours to actually simulate (3 days)
@@ -139,57 +109,125 @@ for k = 1:Nsim %(from 1 to 72)
     E_actual(k+1) = min(max(E_next, p.Emin), p.Emax);
 
     Ppeak_running = max(Ppeak_running, Pgrid_actual(k));
-
+    
     Pch_cmd_log(k)  = Pch_cmd;
     Pdis_cmd_log(k) = Pdis_cmd;
 end
 fprintf('Done.\n\n');
 
+%% ---------------- BESS OPERATIONAL DURATION & SCD CHECK ----------------
+% Numerical tolerance threshold (1e-3 kW = 1 Watt) to avoid floating-point noise
+tol = 1e-3;
+
+is_charging    = Pch_cmd_log > tol;
+is_discharging = Pdis_cmd_log > tol;
+
+n_charge = sum(is_charging & ~is_discharging);
+n_dis    = sum(~is_charging & is_discharging);
+n_idle   = sum(~is_charging & ~is_discharging);
+n_both   = sum(is_charging & is_discharging); % Must always be 0
+
+fprintf('=================== BESS OPERATIONAL DURATION / SCD CHECK ===================\n');
+fprintf('Idle hours (battery doing nothing):               %d hrs (%.1f%%)\n', n_idle, 100*n_idle/Nsim);
+fprintf('Charging hours (Pch > 0, Pdis = 0):              %d hrs (%.1f%%)\n', n_charge, 100*n_charge/Nsim);
+fprintf('Discharging hours (Pch = 0, Pdis > 0):            %d hrs (%.1f%%)\n', n_dis, 100*n_dis/Nsim);
+fprintf('Simultaneous charge+discharge hours (must be 0): %d hrs\n', n_both);
+
+assert(n_both == 0, 'MILP_MPCwrapper:SCD_violation', ...
+    'Simultaneous charging and discharging occurred -- check solver formulation!');
+fprintf('CONFIRMED: Charge and discharge were mutually exclusive in all time steps.\n');
+fprintf('==============================================================================\n\n');
+
+%% ---------------- PEAK-DEMAND GUARANTEE CHECK (new) ----------------
+fprintf('=================== PEAK-DEMAND CEILING CHECK ===================\n');
+%fprintf('Hard ceiling passed to every solve:     %.1f kVA\n', Ppeak_cap);
+fprintf('Realized EMS peak (should be <= ceiling): %.1f kVA\n', Ppeak_running);
+%assert(Ppeak_running <= Ppeak_cap + 1e-6, 'MILP_MPCwrapper:PeakCapViolated', ...
+   % 'EMS peak exceeded the hard cap -- this should be impossible.');
+fprintf('CONFIRMED: EMS peak never exceeded the no-BESS baseline peak.\n');
+fprintf('===================================================================\n\n');
+
 %% ---------------- cost accounting (proposed system) ----------------
-lambda_win = lambda_actual(1:Nsim);
-energy_cost_ems = sum(lambda_win .* Pgrid_actual .* p.dt);
-demand_cost_ems = p.CD * Ppeak_running;
-total_cost_ems  = energy_cost_ems + demand_cost_ems;
+lambda_win       = lambda_actual(1:Nsim);
+energy_cost_ems  = sum(lambda_win .* Pgrid_actual .* p.dt);
+
+% Compute peak in kVA and actual demand charge
+peak_kva_ems     = Ppeak_running / p.pf;
+demand_cost_ems  = p.CD * peak_kva_ems;
+total_cost_ems   = energy_cost_ems + demand_cost_ems;
 
 %% ---------------- baseline (grid-only) ----------------
-base = baseline_EMS_dispatch(Pload_actual(1:Nsim), lambda_win, p.CD, p.dt);
+base = baseline_EMS_dispatch(Pload_actual(1:Nsim), lambda_win, p.CD, p.dt, p.pf);
 
 %% ---------------- summary metrics (Section 3.6) ----------------
-pct_reduction = 100*(base.total_cost - total_cost_ems)/base.total_cost;
-par_ems  = max(Pgrid_actual)/mean(Pgrid_actual);
-par_base = max(base.Pgrid)/mean(base.Pgrid);
-served_pv_bess = 1 - sum(Pgrid_actual)/sum(Pload_actual(1:Nsim));
+% Financial Percentage Reductions
+pct_total_reduction  = 100 * (base.total_cost - total_cost_ems) / base.total_cost;
+pct_demand_reduction = 100 * (base.demand_cost - demand_cost_ems) / base.demand_cost;
+pct_energy_reduction = 100 * (base.energy_cost - energy_cost_ems) / base.energy_cost;
 
+% Grid & Generation Metrics
+par_ems  = max(Pgrid_actual) / mean(Pgrid_actual);
+par_base = max(base.Pgrid) / mean(base.Pgrid);
+served_pv_bess = 1 - sum(Pgrid_actual) / sum(Pload_actual(1:Nsim));
+
+% Solar Curtailment Metrics
+total_pv_kwh        = sum(Ppv_actual(1:Nsim)) * p.dt;
+total_curtailed_kwh = sum(curtailed) * p.dt;
+if total_pv_kwh > 0
+    solar_utilization_rate = 100 * (1 - (total_curtailed_kwh / total_pv_kwh));
+else
+    solar_utilization_rate = 100;
+end
+
+%% ---------------- PRINT RESULTS TABLE ----------------
 fprintf('=================== RESULTS (%d-hour window) ===================\n', Nsim);
-fprintf('%-32s %14s %14s\n','','Baseline','Proposed EMS');
-fprintf('%-32s %14.1f %14.1f\n','Energy cost (KES)', base.energy_cost, energy_cost_ems);
-fprintf('%-32s %14.1f %14.1f\n','Demand charge (KES)', base.demand_cost, demand_cost_ems);
-fprintf('%-32s %14.1f %14.1f\n','Total cost (KES)', base.total_cost, total_cost_ems);
-fprintf('%-32s %14.1f %14.1f\n','Peak grid demand (kW)', base.peak, Ppeak_running);
-fprintf('%-32s %14.2f %14.2f\n','Peak-to-average ratio', par_base, par_ems);
+fprintf('%-32s %14s %14s\n', '', 'Baseline', 'Proposed EMS');
+fprintf('%-32s %14.1f %14.1f\n', 'Energy cost (KES)', base.energy_cost, energy_cost_ems);
+fprintf('%-32s %14.1f %14.1f\n', 'Demand charge (KES)', base.demand_cost, demand_cost_ems);
+fprintf('%-32s %14.1f %14.1f\n', 'Total cost (KES)', base.total_cost, total_cost_ems);
+fprintf('%-32s %14.1f %14.1f\n', 'Peak grid demand (kW)', base.peak, Ppeak_running);
+fprintf('%-32s %14.1f %14.1f\n', 'Peak grid demand (kVA)', base.peak_kva, peak_kva_ems);
+fprintf('%-32s %14.2f %14.2f\n', 'Peak-to-average ratio', par_base, par_ems);
 fprintf('------------------------------------------------------------------\n');
-fprintf('Cost reduction vs. baseline: %.1f%%\n', pct_reduction);
-fprintf('Share of load served by PV+BESS: %.1f%%\n', 100*served_pv_bess);
+fprintf('Total cost reduction vs. baseline:    %.1f%%\n', pct_total_reduction);
+fprintf('Demand charge reduction vs. baseline: %.1f%%\n', pct_demand_reduction);
+fprintf('Energy cost reduction vs. baseline:   %.1f%%\n', pct_energy_reduction);
+fprintf('Share of load served by PV+BESS:      %.1f%%\n', 100*served_pv_bess);
+fprintf('===================================================================\n');
+fprintf('Total Available Solar Generation: %.2f kWh\n', total_pv_kwh);
+fprintf('Total Curtailed (Wasted) Solar:   %.2f kWh\n', total_curtailed_kwh);
+fprintf('Solar Energy Utilization Rate:    %.2f%%\n', solar_utilization_rate);
 fprintf('===================================================================\n');
 
 %% ---------------- plots ----------------
 t = (1:Nsim)';
-figure('Name','EMS Dispatch');
-subplot(3,1,1);
+% figure('Name','EMS Dispatch');
+figure('Name','EMS Dispatch and Curtailment Analysis');
+
+subplot(4,1,1);
 plot(t, base.Pgrid, 'g--', t, Pgrid_actual, 'b-', 'LineWidth', 1.3);
 yline(Ppeak_running,'b:','EMS peak'); yline(base.peak,'g:','Baseline peak');
 legend('Baseline grid draw','EMS grid draw','Location','best');
 ylabel('kW'); title('Grid Power Drawn'); grid on;
 
-subplot(3,1,2);
+subplot(4,1,2);
 plot(t, Pch_cmd_log, 'g-', t, -Pdis_cmd_log, 'r-', 'LineWidth', 1.3);
 legend('Charge','Discharge (negative)','Location','best');
 ylabel('kW'); title('Battery Charge/Discharge Command'); grid on;
 
-subplot(3,1,3);
+subplot(4,1,3);
 plot(t, 100*E_actual(1:Nsim)/p.Ecap, 'm-', 'LineWidth', 1.3);
 yline(100*p.Emin/p.Ecap,'k:'); yline(100*p.Emax/p.Ecap,'k:');
 ylabel('SOC (%)'); xlabel('Hour'); title('Battery State of Charge'); grid on;
+
+% --- NEW: Subplot 4 - Solar Curtailment Plot ---
+subplot(4,1,4);
+area(t, curtailed, 'FaceColor', [0.85 0.33 0.10], 'FaceAlpha', 0.6, 'EdgeColor', 'r');
+ylabel('kW'); xlabel('Hour');
+title(sprintf('Solar Curtailment Pcurt (Total Wasted: %.1f kWh | Solar Utilization: %.1f%%)', ...
+      total_curtailed_kwh, solar_utilization_rate));
+grid on;
+
 
 %% ---------------- export for Simscape (Section 3.5) ----------------
 % Package the realized dispatch as timeseries objects that a

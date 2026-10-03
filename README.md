@@ -20,7 +20,7 @@ The system architecture is broken down into system sizing via Particle Swarm Opt
 * **`MILP_MPCwrapper.m`**: The main execution script simulating a 72-hour operating window with an 8% forecast error noise to mimic real-world unpredictability. It implements the receding-horizon control loop: viewing 24 hours ahead, locking in only the immediate next hour's charge/discharge command, updating the true battery state, and repeating the process.
 
 ### Data
-* ** `pvLoadPriceData_New.mat`**: Binary MATLAB data files containing the time-series arrays for clear, cloudy, and partly cloudy irradiance day-types, alongside cost and variable load profiles.
+* ** `pvLoadPriceData.mat`**: Binary MATLAB data files containing the time-series arrays for clear, cloudy, and partly cloudy irradiance day-types, alongside cost and variable load profiles.
 
 ## Dependencies
 

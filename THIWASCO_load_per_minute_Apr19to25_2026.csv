@@ -1,5 +1,4 @@
 timestamp,minute_index,Pload_kW,Papparent_kVA,PowerFactor,hourly_value_interpolated,is_original_hourly_point
-2026-04-19 00:00:00,1,644.04,706.959,0.911,0,1
 2026-04-19 00:01:00,2,644.174,707.159,0.9109,0,0
 2026-04-19 00:02:00,3,644.309,707.36,0.9109,0,0
 2026-04-19 00:03:00,4,644.444,707.56,0.9108,0,0

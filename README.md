@@ -24,8 +24,8 @@ The system architecture is broken down into system sizing via Particle Swarm Opt
 
 The project utilizes two pairs of distinct datasets tailored for the different temporal resolutions required by the sizing and optimization stages:
 
-* **`pvLoadCostData.mat` or **: Contains **1-minute** time-series data. This high-resolution dataset is used by the sizing algorithm (`sizing_pso.py`) to accurately capture rapid fluctuations in load and irradiance for optimal hardware sizing.
-* **`pvLoadPriceData.mat` or THIWASCO_real_load_Apr19to25_2026**: Contains **hourly** time-series data. This dataset includes arrays for clear, cloudy, and partly cloudy irradiance day-types, alongside cost and variable load profiles. It is used by the MATLAB MPC scripts to calculate hourly operational dispatch.
+* **`pvLoadCostData.mat` or `THIWASCO_load_per_minute_Apr19to25_2026`**: Contains **1-minute** time-series data. This high-resolution dataset is used by the sizing algorithm (`sizing_pso.py`) to accurately capture rapid fluctuations in load and irradiance for optimal hardware sizing.
+* **`pvLoadPriceData.mat` or `THIWASCO_real_load_Apr19to25_2026`**: Contains **hourly** time-series data. This dataset includes arrays for clear, cloudy, and partly cloudy irradiance day-types, alongside cost and variable load profiles. It is used by the MATLAB MPC scripts to calculate hourly operational dispatch.
 
 ## Dependencies
 

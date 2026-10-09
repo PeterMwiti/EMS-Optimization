@@ -56,8 +56,8 @@ p.rho       = 15;          % KES/kWh, linear penalty weight on overshoot s(t)
 % 24-hour templates and can run for any length.
 switch upper(data_source)
   case 'THIWASCO'
-    p.Pch_max  = 250;   p.Pdis_max = 250;
-    data_params = struct('Ppv_rated', 1100, 'Pload_base', 350, 'Pload_peak', 820, ...
+    p.Pch_max  = 5000;   p.Pdis_max = 5000;
+    data_params = struct('Ppv_rated', 1457.6, 'Pload_base', 350, 'Pload_peak', 692.98, ...
                           'data_source', 'THIWASCO');
     T_horizon = 24;
     Nsim      = 145;    % Nsim + T_horizon - 1 = 168, the full real week
